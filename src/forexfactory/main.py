@@ -1,3 +1,5 @@
+# src/forexfactory/main.py
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -8,6 +10,7 @@ from dateutil.tz import gettz
 import undetected_chromedriver as uc
 from .date_logic import build_url_for_partial_range, build_url_for_full_month
 from .scraper import parse_calendar_page_with_details
+from .incremental import scrape_incremental
 import logging
 
 logging.basicConfig(
@@ -116,14 +119,16 @@ def scrape_range_with_details(
 if __name__ == "__main__":
     tz = gettz("Asia/Tehran")
     # Example usage: from 2025-01-01 to 2025-01-10
-    start_dt = datetime(2025, 1, 5, tzinfo=tz)
-    end_dt   = datetime(2025, 1, 5, tzinfo=tz)
+    # start_dt = datetime(2025, 1, 5, tzinfo=tz)
+    # end_dt   = datetime(2025, 1, 5, tzinfo=tz)
 
-    scrape_range_with_details(
-        start_date=start_dt,
-        end_date=end_dt,
-        output_csv="forex_factory_details.csv",
-        tzname="Asia/Tehran"
-    )
-
-
+    # scrape_range_with_details(
+    #     start_date=start_dt,
+    #     end_date=end_dt,
+    #     output_csv="forex_factory_details.csv",
+    #     tzname="Asia/Tehran"
+    # )
+    #
+    from_date = datetime(2024, 3, 21, tzinfo=gettz("Asia/Tehran"))
+    to_date   = datetime(2024, 3, 25, tzinfo=gettz("Asia/Tehran"))
+    scrape_incremental(from_date, to_date, "forex_factory_cache.csv", tzname="Asia/Tehran")
