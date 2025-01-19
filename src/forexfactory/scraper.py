@@ -3,8 +3,8 @@
 import time
 import re
 import logging
-import csv
-from datetime import datetime
+import pandas as pd
+from datetime import datetime, timedelta
 from dateutil.tz import gettz
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -15,10 +15,10 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     StaleElementReferenceException
 )
+import undetected_chromedriver as uc
 
+from .csv_util import ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
 from .detail_parser import parse_detail_table, detail_data_to_string
-from .csv_util import ensure_csv_header
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,232 +27,160 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_day_from_day_breaker(row, fallback_date: datetime, tzname: str):
-    local_tz = gettz(tzname)
-    try:
-        day_breaker_cell = row.find_element(By.XPATH, './/td[contains(@class,"calendar__cell")]')
-        raw_text = (day_breaker_cell.get_attribute("textContent") or "").strip()
-        parts = raw_text.split()
-        if len(parts) >= 2:
-            month_abbr = parts[-2]
-            day_str = parts[-1]
-            guess_year = fallback_date.year
-            dt_str = f"{month_abbr}{day_str} {guess_year}"
-            try:
-                parsed_day = datetime.strptime(dt_str, "%b%d %Y").replace(tzinfo=local_tz)
-                return parsed_day
-            except ValueError as ve:
-                logger.error(f"Date parsing error: {ve} for text: {dt_str}")
-                return None
-    except NoSuchElementException as e:
-        logger.warning(f"Day breaker cell not found in row: {row}. Error: {e}")
-    return None
-
-def extract_basic_cells(row, current_day: datetime):
+def parse_calendar_day(driver, the_date: datetime, scrape_details=False) -> pd.DataFrame:
     """
-    Extracts main columns from an event row.
+    Scrape data for a single day (the_date).
+    Return a DataFrame of columns:
+      DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
+    If scrape_details=False, skip detail parsing.
     """
+    date_str = the_date.strftime('%b%d.%Y').lower()
+    url = f"https://www.forexfactory.com/calendar?day={date_str}"
+    logger.info(f"Scraping URL: {url}")
+    driver.get(url)
+
+    # Wait for page load
     try:
-        time_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__time")]')
-        currency_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__currency")]')
-        impact_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__impact")]')
-        event_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__event")]')
-        actual_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__actual")]')
-        forecast_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__forecast")]')
-        previous_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__previous")]')
-    except NoSuchElementException as e:
-        logger.warning(f"Missing one or more required cells in row: {row}. Error: {e}")
-        raise
-
-
-    time_text = time_el.text.strip()
-    currency_text = currency_el.text.strip()
-
-    impact_text = ""
-    try:
-        impact_span = impact_el.find_element(By.XPATH, './/span')
-        impact_text = impact_span.get_attribute("title") or ""
-    except NoSuchElementException:
-        impact_text = impact_el.text.strip()
-
-    event_text = event_el.text.strip()
-    actual_text = actual_el.text.strip()
-    forecast_text = forecast_el.text.strip()
-    previous_text = previous_el.text.strip()
-
-
-    event_dt = current_day
-    time_lower = time_text.lower()
-    if "day" in time_lower:
-        event_dt = event_dt.replace(hour=23, minute=59, second=59)
-    elif "data" in time_lower:
-        event_dt = event_dt.replace(hour=0, minute=0, second=1)
-    else:
-        m = re.match(r'(\d{1,2}):(\d{2})(am|pm)', time_lower)
-        if m:
-            hh = int(m.group(1))
-            mm = int(m.group(2))
-            ampm = m.group(3)
-            if ampm == 'pm' and hh < 12:
-                hh += 12
-            if ampm == 'am' and hh == 12:
-                hh = 0
-            event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
-
-    return (event_dt, currency_text, impact_text, event_text,
-            actual_text, forecast_text, previous_text)
-
-def parse_calendar_page_with_details(driver, start_date, end_date, output_csv, tzname,scrape_details=False):
-    """
-    Parses the loaded page (month=... or range=...).
-    Extracts events and their details, then writes them to CSV.
-    """
-    try:
-
-        WebDriverWait(driver, 30).until(
+        WebDriverWait(driver, 15).until(
             EC.visibility_of_element_located((By.XPATH, '//table[contains(@class,"calendar__table")]'))
         )
     except TimeoutException:
-        logger.error("Calendar table did not load in time.")
-        return 0
+        logger.warning(f"Page did not load for day={the_date.date()}")
+        return pd.DataFrame(columns=["DateTime","Currency","Impact","Event","Actual","Forecast","Previous","Detail"])
 
+    rows = driver.find_elements(By.XPATH, '//tr[contains(@class,"calendar__row")]')
+    data_list = []
 
-    rows = driver.find_elements(
-        By.XPATH,
-        '//tr[contains(@class,"calendar__row")]'
-    )
-
-    logger.info(f"Found {len(rows)} total rows.")
-
-    if len(rows) == 0:
-        logger.warning("No rows found with the current XPath.")
-        return 0
-
-    events = []
-    current_day = None
-
-
+    current_day = the_date  # we assume the page is exactly for that day, so no day-breaker logic here
     for row in rows:
-        try:
-            row_class = row.get_attribute("class")
-
-
-            if "calendar__row--day-breaker" in row_class:
-                current_day = get_day_from_day_breaker(row, start_date, tzname)
-                if current_day:
-                    logger.info(f"Updated current_day to {current_day}")
-                else:
-                    logger.warning(f"Failed to parse date from day-breaker row: {row}")
-                continue
-
-
-            event_id = row.get_attribute("data-event-id")
-            if event_id:
-                if not current_day:
-                    logger.warning(f"No current_day set for event row: {row}")
-                    continue
-
-                if current_day < start_date or current_day > end_date:
-                    logger.info(f"Skipping row for date {current_day} as it's outside the range.")
-                    continue
-
-                events.append({'event_id': event_id, 'current_day': current_day})
-        except StaleElementReferenceException as e:
-            logger.warning(f"StaleElementReferenceException while collecting rows. Error: {e}")
-            continue
-        except Exception as e:
-            logger.exception(f"Unexpected error while collecting rows: {e}")
+        row_class = row.get_attribute("class")
+        if "day-breaker" in row_class or "no-event" in row_class:
             continue
 
-    logger.info(f"Found {len(events)} events to process.")
-
-    total_written = 0
-
-
-    for event in events:
-        event_id = event['event_id']
-        current_day = event['current_day']
-
+        # parse basic cells
         try:
+            time_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__time")]')
+            currency_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__currency")]')
+            impact_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__impact")]')
+            event_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__event")]')
+            actual_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__actual")]')
+            forecast_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__forecast")]')
+            previous_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__previous")]')
+        except NoSuchElementException:
+            continue
 
-            event_row = driver.find_element(By.XPATH, f'//tr[@data-event-id="{event_id}"]')
+        time_text = time_el.text.strip()
+        currency_text = currency_el.text.strip()
 
+        impact_text = ""
+        try:
+            impact_span = impact_el.find_element(By.XPATH, './/span')
+            impact_text = impact_span.get_attribute("title") or ""
+        except:
+            impact_text = impact_el.text.strip()
 
-            driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", event_row)
-            time.sleep(1)
+        event_text = event_el.text.strip()
+        actual_text = actual_el.text.strip()
+        forecast_text = forecast_el.text.strip()
+        previous_text = previous_el.text.strip()
 
-
-            open_link = WebDriverWait(event_row, 10).until(
-                EC.element_to_be_clickable((By.XPATH, './/td[contains(@class,"calendar__detail")]/a'))
-            )
+        detail_str = ""
+        if scrape_details:
+            # attempt detail
             try:
+                open_link = row.find_element(By.XPATH, './/td[contains(@class,"calendar__detail")]/a')
+                # scroll
+                driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth',block:'center'});", open_link)
+                time.sleep(1)
                 open_link.click()
-            except ElementClickInterceptedException as e:
-                logger.warning(f"ElementClickInterceptedException when clicking detail for event_id {event_id}. Error: {e}")
-
-                driver.execute_script("arguments[0].click();", open_link)
-
-
-            WebDriverWait(driver, 10).until(
-                EC.visibility_of_element_located((By.XPATH, '//tr[contains(@class,"calendar__details--detail")]'))
-            )
-
-
-            detail_data = parse_detail_table(driver)
-            detail_str = detail_data_to_string(detail_data)
-
-            try:
-                close_link = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, './/a[@title="Close Detail"]'))
-                )
-                try:
-                    close_link.click()
-                except ElementClickInterceptedException as e:
-                    logger.warning(f"ElementClickInterceptedException when closing detail for event_id {event_id}. Error: {e}")
-                    driver.execute_script("arguments[0].click();", close_link)
-
+                # wait detail
                 WebDriverWait(driver, 5).until(
-                    EC.invisibility_of_element_located((By.XPATH, '//tr[contains(@class,"calendar__details--detail")]'))
+                    EC.visibility_of_element_located((By.XPATH, '//tr[contains(@class,"calendar__details--detail")]'))
                 )
-            except TimeoutException:
-                logger.warning(f"Close link not found or not clickable for event_id {event_id}")
-            except Exception as e:
-                logger.exception(f"Unexpected error while closing detail for event_id {event_id}. Error: {e}")
+                detail_data = parse_detail_table(driver)
+                detail_str = detail_data_to_string(detail_data)
+                # close
+                try:
+                    close_link = row.find_element(By.XPATH, './/a[@title="Close Detail"]')
+                    close_link.click()
+                except:
+                    pass
+            except:
+                pass
+
+        # time logic
+        event_dt = current_day
+        time_lower = time_text.lower()
+        if "day" in time_lower:
+            event_dt = event_dt.replace(hour=23, minute=59, second=59)
+        elif "data" in time_lower:
+            event_dt = event_dt.replace(hour=0, minute=0, second=1)
+        else:
+            m = re.match(r'(\d{1,2}):(\d{2})(am|pm)', time_lower)
+            if m:
+                hh = int(m.group(1))
+                mm = int(m.group(2))
+                ampm = m.group(3)
+                if ampm == 'pm' and hh < 12:
+                    hh += 12
+                if ampm == 'am' and hh == 12:
+                    hh = 0
+                event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
+
+        data_list.append({
+            "DateTime": event_dt.isoformat(),
+            "Currency": currency_text,
+            "Impact": impact_text,
+            "Event": event_text,
+            "Actual": actual_text,
+            "Forecast": forecast_text,
+            "Previous": previous_text,
+            "Detail": detail_str
+        })
+
+    return pd.DataFrame(data_list)
 
 
-            (event_dt, currency_text, impact_text,
-             event_text, actual_text, forecast_text,
-             previous_text) = extract_basic_cells(event_row, current_day)
+def scrape_day(driver, the_date: datetime, existing_df: pd.DataFrame, scrape_details=False) -> pd.DataFrame:
+    """
+    Re-scrape a single day, returning a DataFrame of new data.
+    """
+    df_day_new = parse_calendar_day(driver, the_date, scrape_details=scrape_details)
+    return df_day_new
 
+def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran", scrape_details=False):
+    """
+    Day-by-day approach. Use pandas merge to update CSV.
+    """
+    from .csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 
-            ensure_csv_header(output_csv)
+    ensure_csv_header(output_csv)
+    existing_df = read_existing_data(output_csv)
 
-            with open(output_csv, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    event_dt.isoformat(),
-                    currency_text,
-                    impact_text,
-                    event_text,
-                    actual_text,
-                    forecast_text,
-                    previous_text,
-                    detail_str
-                ])
-            total_written += 1
+    driver = uc.Chrome()
+    driver.set_window_size(1400, 1000)
 
-        except NoSuchElementException as e:
-            logger.warning(f"Could not find event row with event_id {event_id}. Error: {e}")
-            continue
-        except TimeoutException as e:
-            logger.warning(f"Timeout while processing event_id {event_id}. Error: {e}")
-            continue
-        except StaleElementReferenceException as e:
-            logger.warning(f"StaleElementReferenceException for event_id {event_id}. Error: {e}")
-            continue
-        except Exception as e:
-            logger.exception(f"Unexpected error while processing event_id {event_id}. Error: {e}")
-            continue
+    total_new = 0
+    day_count = (to_date - from_date).days + 1
+    logger.info(f"Scraping from {from_date.date()} to {to_date.date()} for {day_count} days.")
 
-    logger.info(f"Total events written: {total_written}")
-    return total_written
+    try:
+        current_day = from_date
+        while current_day <= to_date:
+            logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}...")
+            df_new = scrape_day(driver, current_day, existing_df, scrape_details=scrape_details)
+
+            if not df_new.empty:
+                merged_df = merge_new_data(existing_df, df_new)
+                new_rows = len(merged_df) - len(existing_df)
+                if new_rows > 0:
+                    logger.info(f"Added/Updated {new_rows} rows for {current_day.date()}")
+                existing_df = merged_df
+                total_new += new_rows
+
+            current_day += timedelta(days=1)
+    finally:
+        driver.quit()
+
+    write_data_to_csv(existing_df, output_csv)
+    logger.info(f"Done. Total new/updated rows: {total_new}")
