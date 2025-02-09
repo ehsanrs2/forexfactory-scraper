@@ -148,9 +148,13 @@ def scrape_day(driver, the_date: datetime, existing_df: pd.DataFrame, scrape_det
     df_day_new = parse_calendar_day(driver, the_date, scrape_details=scrape_details)
     return df_day_new
 
-def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran", scrape_details=False):
+
+def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran",
+                        scrape_details=False):
     """
-    Day-by-day approach. Use pandas merge to update CSV.
+    Day-by-day approach. Uses pandas merge to update the CSV file.
+    After processing each day's data, the updated DataFrame is written to the CSV,
+    ensuring that data for each day is saved in case of an interruption.
     """
     from .csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 
@@ -178,9 +182,13 @@ def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str,
                 existing_df = merged_df
                 total_new += new_rows
 
+                # Save the updated DataFrame to CSV after processing the day's data.
+                write_data_to_csv(existing_df, output_csv)
+
             current_day += timedelta(days=1)
     finally:
         driver.quit()
 
+    # Final save (if needed)
     write_data_to_csv(existing_df, output_csv)
     logger.info(f"Done. Total new/updated rows: {total_new}")
