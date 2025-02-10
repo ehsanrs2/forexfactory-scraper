@@ -27,37 +27,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def parse_calendar_day(driver, the_date: datetime, scrape_details=False) -> pd.DataFrame:
+
+def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existing_df=None) -> pd.DataFrame:
     """
-    Scrape data for a single day (the_date).
-    Return a DataFrame of columns:
+    Scrape data for a single day (the_date) and return a DataFrame with columns:
       DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
-    If scrape_details=False, skip detail parsing.
+    If scrape_details is False, skip detail parsing.
+
+    Before fetching detail data from the Internet, this function checks if the record
+    already exists (using existing_df) with a non-empty "Detail" field.
     """
     date_str = the_date.strftime('%b%d.%Y').lower()
     url = f"https://www.forexfactory.com/calendar?day={date_str}"
     logger.info(f"Scraping URL: {url}")
     driver.get(url)
 
-    # Wait for page load
     try:
         WebDriverWait(driver, 15).until(
             EC.visibility_of_element_located((By.XPATH, '//table[contains(@class,"calendar__table")]'))
         )
     except TimeoutException:
         logger.warning(f"Page did not load for day={the_date.date()}")
-        return pd.DataFrame(columns=["DateTime","Currency","Impact","Event","Actual","Forecast","Previous","Detail"])
+        return pd.DataFrame(
+            columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
 
     rows = driver.find_elements(By.XPATH, '//tr[contains(@class,"calendar__row")]')
     data_list = []
+    current_day = the_date
 
-    current_day = the_date  # we assume the page is exactly for that day, so no day-breaker logic here
     for row in rows:
         row_class = row.get_attribute("class")
         if "day-breaker" in row_class or "no-event" in row_class:
             continue
 
-        # parse basic cells
+        # Parse the basic cells
         try:
             time_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__time")]')
             currency_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__currency")]')
@@ -72,11 +75,12 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False) -> pd.D
         time_text = time_el.text.strip()
         currency_text = currency_el.text.strip()
 
+        # Get impact text
         impact_text = ""
         try:
             impact_span = impact_el.find_element(By.XPATH, './/span')
             impact_text = impact_span.get_attribute("title") or ""
-        except:
+        except Exception:
             impact_text = impact_el.text.strip()
 
         event_text = event_el.text.strip()
@@ -84,31 +88,7 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False) -> pd.D
         forecast_text = forecast_el.text.strip()
         previous_text = previous_el.text.strip()
 
-        detail_str = ""
-        if scrape_details:
-            # attempt detail
-            try:
-                open_link = row.find_element(By.XPATH, './/td[contains(@class,"calendar__detail")]/a')
-                # scroll
-                driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth',block:'center'});", open_link)
-                time.sleep(1)
-                open_link.click()
-                # wait detail
-                WebDriverWait(driver, 5).until(
-                    EC.visibility_of_element_located((By.XPATH, '//tr[contains(@class,"calendar__details--detail")]'))
-                )
-                detail_data = parse_detail_table(driver)
-                detail_str = detail_data_to_string(detail_data)
-                # close
-                try:
-                    close_link = row.find_element(By.XPATH, './/a[@title="Close Detail"]')
-                    close_link.click()
-                except:
-                    pass
-            except:
-                pass
-
-        # time logic
+        # Determine event time based on text
         event_dt = current_day
         time_lower = time_text.lower()
         if "day" in time_lower:
@@ -127,6 +107,46 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False) -> pd.D
                     hh = 0
                 event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
 
+        # Compute a unique key for the event using DateTime, Currency, and Event
+        unique_key = f"{event_dt.isoformat()}_{currency_text}_{event_text}"
+
+        # Initialize detail string
+        detail_str = ""
+        if scrape_details:
+            # If an existing CSV DataFrame is provided, check if this record exists and has detail.
+            if existing_df is not None:
+                matched = existing_df[
+                    (existing_df["DateTime"] == event_dt.isoformat()) &
+                    (existing_df["Currency"].str.strip() == currency_text) &
+                    (existing_df["Event"].str.strip() == event_text)
+                    ]
+                if not matched.empty:
+                    existing_detail = str(matched.iloc[0]["Detail"]).strip() if pd.notnull(
+                        matched.iloc[0]["Detail"]) else ""
+                    if existing_detail:
+                        detail_str = existing_detail
+
+            # If detail_str is still empty, then fetch detail from the Internet.
+            if not detail_str:
+                try:
+                    open_link = row.find_element(By.XPATH, './/td[contains(@class,"calendar__detail")]/a')
+                    driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth',block:'center'});", open_link)
+                    time.sleep(1)
+                    open_link.click()
+                    WebDriverWait(driver, 5).until(
+                        EC.visibility_of_element_located(
+                            (By.XPATH, '//tr[contains(@class,"calendar__details--detail")]'))
+                    )
+                    detail_data = parse_detail_table(driver)
+                    detail_str = detail_data_to_string(detail_data)
+                    try:
+                        close_link = row.find_element(By.XPATH, './/a[@title="Close Detail"]')
+                        close_link.click()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
         data_list.append({
             "DateTime": event_dt.isoformat(),
             "Currency": currency_text,
@@ -143,19 +163,14 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False) -> pd.D
 
 def scrape_day(driver, the_date: datetime, existing_df: pd.DataFrame, scrape_details=False) -> pd.DataFrame:
     """
-    Re-scrape a single day, returning a DataFrame of new data.
+    Re-scrape a single day, using existing_df to check for already-saved details.
     """
-    df_day_new = parse_calendar_day(driver, the_date, scrape_details=scrape_details)
+    df_day_new = parse_calendar_day(driver, the_date, scrape_details=scrape_details, existing_df=existing_df)
     return df_day_new
 
 
 def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran",
                         scrape_details=False):
-    """
-    Day-by-day approach. Uses pandas merge to update the CSV file.
-    After processing each day's data, the updated DataFrame is written to the CSV,
-    ensuring that data for each day is saved in case of an interruption.
-    """
     from .csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 
     ensure_csv_header(output_csv)
@@ -182,12 +197,22 @@ def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str,
                 existing_df = merged_df
                 total_new += new_rows
 
-                # Save the updated DataFrame to CSV after processing the day's data.
+                # Save updated data to CSV after processing the day's data.
                 write_data_to_csv(existing_df, output_csv)
 
             current_day += timedelta(days=1)
     finally:
-        driver.quit()
+        if driver:
+            try:
+                driver.quit()
+                logger.info("Chrome WebDriver closed successfully.")
+            except OSError as ose:
+                # Ignore specific OSError during final cleanup (e.g., WinError 6)
+                logger.debug(f"Ignored OSError during WebDriver quit: {ose}")
+            except Exception as e:
+                logger.error(f"Error closing WebDriver: {e}")
+            finally:
+                driver = None
 
     # Final save (if needed)
     write_data_to_csv(existing_df, output_csv)
