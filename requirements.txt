@@ -1,5 +1,6 @@
 selenium==4.27.1
 undetected-chromedriver==3.5.5
-python-dateutil==2.8.0
+python-dateutil>=2.8.2
 tzdata==2024.2
-pandas
+pandas~=2.1.0
+numpy<2.0

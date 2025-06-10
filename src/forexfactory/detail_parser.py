@@ -7,11 +7,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+#basicConfig is expected to be called in main.py
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
@@ -35,16 +31,18 @@ def parse_detail_table(driver):
             if not all_tables:
                 logger.warning("No detail_table found.")
                 break
-            detail_table = all_tables[-1]  # or the first if needed
+            # Forex Factory might keep previous detail tables in the DOM if multiple items are opened/closed;
+            # the last one is assumed to be the currently active one.
+            detail_table = all_tables[-1]
 
-            rows = detail_table.find_elements(By.XPATH, './tr')
+            rows = detail_table.find_elements(By.XPATH, './/tr') # Changed to .//tr to be more robust
             for r in rows:
                 try:
                     spec_name = r.find_element(By.XPATH, './td[1]').text.strip()
                     spec_desc = r.find_element(By.XPATH, './td[2]').text.strip()
                     detail_data[spec_name] = spec_desc
                 except NoSuchElementException as e:
-                    pass
+                    logger.warning(f"Could not parse a spec row in detail table: {e}", exc_info=True)
             break
         except TimeoutException as e:
             logger.error("Timeout in parse_detail_table: %s", e, exc_info=True)

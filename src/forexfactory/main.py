@@ -17,6 +17,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
+    """
+    Main entry point for the Forex Factory scraper application.
+
+    Parses command-line arguments for the date range, output CSV file, timezone,
+    and whether to scrape event details. It then initiates the scraping process.
+    """
     parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
     parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)')
