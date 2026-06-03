@@ -1,27 +1,40 @@
-import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import unittest
-import shutil
+from pathlib import Path
 from datetime import datetime
 from dateutil.tz import gettz
+import pandas as pd
+import pytest
 
-# فرض می‌کنیم این توابع/کلاس‌ها در ماژول‌های جدا موجود هستند:
+from src.forexfactory.csv_util import CSV_COLUMNS
 from src.forexfactory.main import scrape_range_with_details
+
 
 class TestFullScrape(unittest.TestCase):
 
     def setUp(self):
-        # در صورت نیاز، محیط تست را آماده می‌کنیم
         self.output_file = "test_integration_output.csv"
         if os.path.exists(self.output_file):
             os.remove(self.output_file)
 
     def tearDown(self):
-        # پاکسازی نهایی اگر لازم باشد
         if os.path.exists(self.output_file):
             os.remove(self.output_file)
 
+    def test_cached_dataset_shape(self):
+        cache_file = Path("forex_factory_cache.csv")
+        if not cache_file.exists():
+            self.skipTest("forex_factory_cache.csv is not available")
+
+        df = pd.read_csv(cache_file, dtype=str, nrows=50)
+        self.assertEqual(list(df.columns), CSV_COLUMNS)
+        self.assertGreater(len(df), 0)
+        self.assertTrue(df["DateTime"].str.match(r"\d{4}-\d{2}-\d{2}T").all())
+
+    @pytest.mark.skipif(
+        os.environ.get("RUN_LIVE_SCRAPE") != "1",
+        reason="Live Selenium scrape is disabled unless RUN_LIVE_SCRAPE=1",
+    )
     def test_scrape_small_range(self):
         """
         یک تست انتها به انتها که یک بازه کوچک را اسکرپ می‌کند
@@ -43,9 +56,6 @@ class TestFullScrape(unittest.TestCase):
         with open(self.output_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             self.assertGreater(len(lines), 1, "Should have at least one row of data (plus header).")
-            # می‌توانید سطرها را پارس کنید و مطمئن شوید که بعضی اطلاعات کلیدی داریم
-            # e.g. lines[1] must contain "USD" or "FOMC"
-            # یا اینکه بسنجید که Detail خالی نباشد.
 
 if __name__ == '__main__':
     unittest.main()

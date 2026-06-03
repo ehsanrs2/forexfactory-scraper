@@ -1,5 +1,3 @@
-# src/forexfactory/scraper.py
-
 import time
 import re
 import logging
@@ -12,12 +10,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     NoSuchElementException,
     TimeoutException,
-    ElementClickInterceptedException,
-    StaleElementReferenceException
 )
-import undetected_chromedriver as uc
 
-from .csv_util import ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
+from .csv_util import CSV_COLUMNS, ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
 from .detail_parser import parse_detail_table, detail_data_to_string
 
 logging.basicConfig(
@@ -26,6 +21,48 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+def empty_calendar_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=CSV_COLUMNS)
+
+
+def create_chrome_driver():
+    import undetected_chromedriver as uc
+
+    return uc.Chrome()
+
+
+def get_day_from_day_breaker(row, fallback_date: datetime, tzname="Asia/Tehran"):
+    """
+    Parse Forex Factory day-breaker text like "Sun Jan 5" into a datetime.
+    Returns None when the row does not contain a parseable day.
+    """
+    try:
+        cell = row.find_element(By.XPATH, './/*[contains(@class,"calendar__date")]')
+        text = cell.get_attribute("textContent") or ""
+    except Exception:
+        text = row.get_attribute("textContent") or ""
+
+    match = re.search(r'\b([A-Za-z]{3})\s+(\d{1,2})\b', text)
+    if not match:
+        return None
+
+    month_text, day_text = match.groups()
+    try:
+        parsed = datetime.strptime(
+            f"{month_text} {int(day_text)} {fallback_date.year}",
+            "%b %d %Y",
+        )
+    except ValueError:
+        return None
+
+    if fallback_date.month == 12 and parsed.month == 1:
+        parsed = parsed.replace(year=fallback_date.year + 1)
+    elif fallback_date.month == 1 and parsed.month == 12:
+        parsed = parsed.replace(year=fallback_date.year - 1)
+
+    return parsed.replace(tzinfo=gettz(tzname))
 
 
 def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existing_df=None) -> pd.DataFrame:
@@ -44,8 +81,7 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existin
         driver.get(url)
     except Exception as e:
         logger.warning(f"Failed to load page for {the_date.date()}: {e}")
-        return pd.DataFrame(
-            columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
+        return empty_calendar_frame()
 
     try:
         WebDriverWait(driver, 30).until(  # Increased wait time
@@ -53,8 +89,7 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existin
         )
     except TimeoutException:
         logger.warning(f"Page did not load for day={the_date.date()}")
-        return pd.DataFrame(
-            columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
+        return empty_calendar_frame()
 
     rows = driver.find_elements(By.XPATH, '//tr[contains(@class,"calendar__row")]')
     data_list = []
@@ -151,10 +186,10 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existin
                     try:
                         close_link = row.find_element(By.XPATH, './/a[@title="Close Detail"]')
                         close_link.click()
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    except Exception as e:
+                        logger.debug("Could not close detail row for %s %s: %s", event_dt.isoformat(), event_text, e)
+                except Exception as e:
+                    logger.warning("Could not scrape detail for %s %s %s: %s", event_dt.isoformat(), currency_text, event_text, e)
 
         data_list.append({
             "DateTime": event_dt.isoformat(),
@@ -179,13 +214,11 @@ def scrape_day(driver, the_date: datetime, existing_df: pd.DataFrame, scrape_det
 
 
 def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran",
-                        scrape_details=False, impact_filter=None, keep_currencies=None):
-    from .csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
-
+                        scrape_details=False, impact_filter=None, keep_currencies=None, driver_factory=create_chrome_driver):
     ensure_csv_header(output_csv)
     existing_df = read_existing_data(output_csv)
 
-    driver = uc.Chrome()
+    driver = driver_factory()
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(300)  # Increase timeout to 5 minutes
 

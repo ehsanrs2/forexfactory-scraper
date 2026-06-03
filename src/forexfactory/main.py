@@ -1,13 +1,10 @@
-# src/forexfactory/main.py
-
-import sys
-import os
 import logging
 import argparse
 from datetime import datetime
 from dateutil.tz import gettz
 
 from .incremental import scrape_incremental
+from .scraper import scrape_range_pandas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,6 +12,17 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+def scrape_range_with_details(start_date, end_date, output_csv, tzname="Asia/Tehran"):
+    return scrape_range_pandas(
+        start_date,
+        end_date,
+        output_csv,
+        tzname=tzname,
+        scrape_details=True,
+    )
+
 
 def main():
     parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
@@ -29,8 +37,13 @@ def main():
     args = parser.parse_args()
 
     tz = gettz(args.tz)
+    if tz is None:
+        parser.error(f"Unknown timezone: {args.tz}")
+
     from_date = datetime.fromisoformat(args.start).replace(tzinfo=tz)
     to_date = datetime.fromisoformat(args.end).replace(tzinfo=tz)
+    if to_date < from_date:
+        parser.error("--end must be greater than or equal to --start")
 
     impact_filter = [i.strip().lower() for i in args.impact.split(',')] if args.impact else None
 

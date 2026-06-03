@@ -1,8 +1,12 @@
 errors.csv
 forex_factory_catalog.csv
+forex_factory_cache.csv
 logs_file
 chromedriver.exe
 venv
-__pycache__/# Python cache files
+.venv/
+.pytest_cache/
+__pycache__/
+# Python cache files
 *.pyc
-*.pyo   
+*.pyo

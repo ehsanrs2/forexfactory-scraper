@@ -1,14 +1,20 @@
 # Forex Factory Scraper
 
-A robust and flexible web scraper for [Forex Factory](https://www.forexfactory.com/) calendar events. This tool leverages Selenium and pandas to efficiently collect, update, and manage Forex Factory event data, supporting incremental scraping and optional detailed event information.
-## Download 
-You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar)
+A robust and flexible web scraper for [Forex Factory](https://www.forexfactory.com/) calendar events. This tool uses Selenium and pandas to collect, update, and manage Forex Factory event data, with incremental scraping and optional detailed event information.
+
+## Dataset
+
+The main scraped CSV dataset is hosted on [Hugging Face](https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar). The local `forex_factory_cache.csv` file is treated as generated/downloaded data and is intentionally ignored by git.
+
+If you place `forex_factory_cache.csv` in the project root, the test suite will validate its basic schema without requiring a live scrape.
+
 ## Table of Contents
 
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Dependencies](#dependencies)
+- [Testing](#testing)
 - [Examples](#examples)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -28,7 +34,8 @@ You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehs
 
 ### Prerequisites
 
-- **Python 3.7+**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/downloads/).
+- **Python 3.12+**: The current test environment uses Python 3.12.
+- **Google Chrome**: Required for live Selenium scraping.
 
 ### Step-by-Step Guide
 
@@ -42,17 +49,17 @@ You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehs
 2. **Create a Virtual Environment (Optional but Recommended)**
 
    ```bash
-   python -m venv venv
+   python -m venv .venv
    ```
 
    - **Activate the Virtual Environment:**
      - **Windows:**
        ```bash
-       venv\Scripts\activate
+       .venv\Scripts\activate
        ```
      - **macOS/Linux:**
        ```bash
-       source venv/bin/activate
+       source .venv/bin/activate
        ```
 
 3. **Install Dependencies**
@@ -69,7 +76,11 @@ You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehs
    pip install -r requirements.txt
    ```
 
-   **Note:** Make sure `requirements.txt` includes all necessary libraries such as `selenium`, `pandas`, `undetected-chromedriver`, and others.
+   For development and tests, install:
+
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
 
 4. **Download WebDriver**
 
@@ -86,6 +97,8 @@ The main script can be executed via the command line, allowing you to specify va
 - `--csv`: **(Optional)** Output CSV file path. Default is `forex_factory_cache.csv`.
 - `--tz`: **(Optional)** Timezone for event dates. Default is `Asia/Tehran`.
 - `--details`: **(Optional)** Flag to enable scraping of detailed event information. If omitted, only basic event data is scraped.
+- `--impact`: **(Optional)** Comma-separated impact filter, such as `high,medium`.
+- `--keep-currencies`: **(Optional)** Space-separated currency filter, such as `USD EUR GBP`.
 
 ### Running the Scraper
 
@@ -94,6 +107,8 @@ Navigate to the project root directory and execute the script using Python:
 ```bash
 python -m src.forexfactory.main --start YYYY-MM-DD --end YYYY-MM-DD [--csv OUTPUT_CSV] [--tz TIMEZONE] [--details]
 ```
+
+The scraper reads the existing output CSV before scraping. Days that already exist in the CSV are skipped by incremental mode. When `--details` is enabled, days with missing detail values are refreshed.
 
 ### Examples
 
@@ -128,6 +143,28 @@ Install dependencies using:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Install test dependencies using:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+## Testing
+
+Run the normal test suite with:
+
+```bash
+python -m pytest -q
+```
+
+The normal suite does not run a live Selenium scrape. If `forex_factory_cache.csv` exists in the project root, the integration test validates the cached dataset schema.
+
+To run the live scrape integration test, set `RUN_LIVE_SCRAPE=1`:
+
+```bash
+RUN_LIVE_SCRAPE=1 python -m pytest -q tests/integration/test_full_scrape.py
 ```
 
 ## Examples
@@ -177,8 +214,8 @@ This command performs the same scraping without fetching detailed event specific
    **Cause:** Mismatch between the date format in the CSV and the expected format in the script.
 
    **Solution:**
-   - Ensure that dates in the CSV are in ISO format (`YYYY-MM-DDTHH:MM:SS`).
-   - Modify the `get_last_datetime_from_csv` function if your date format differs.
+   - Ensure that dates in the CSV are in ISO format (`YYYY-MM-DDTHH:MM:SS+TZ`).
+   - Verify that the CSV contains the expected columns: `DateTime`, `Currency`, `Impact`, `Event`, `Actual`, `Forecast`, `Previous`, and `Detail`.
 
 4. **Missing or Incorrect XPath Selectors**
 
@@ -243,4 +280,3 @@ This project is licensed under the [MIT License](LICENSE).
 ---
 
 **Disclaimer:** This scraper is intended for personal use and educational purposes only. Ensure compliance with Forex Factory's [Terms of Service](https://www.forexfactory.com/disclaimer) and avoid violating any usage policies. Use responsibly.
-```
