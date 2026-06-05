@@ -22,7 +22,8 @@ echo "[$(date '+%Y-%m-%d %H:%M')] Updating actuals: $START → $END"
 python3 -m src.forexfactory.main \
   --start "$START" \
   --end "$END" \
-  --csv econ_2026.csv
+  --csv econ_2026.csv \
+  --details
 
 # Re-generate JSON from updated CSV
 python3 to_json.py econ_2026.csv econ_2026.json
