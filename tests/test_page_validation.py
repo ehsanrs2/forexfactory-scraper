@@ -1,10 +1,5 @@
-from datetime import datetime
-
-from src.forexfactory.scraper import (
-    debug_artifact_paths,
-    detect_page_issue,
-    dump_page_debug_artifacts,
-)
+from src.forexfactory.page_detection import detect_page_issue
+from src.forexfactory.providers.http import HttpResult, dump_http_debug, http_debug_artifact_paths
 
 
 def test_security_verification_text_is_flagged():
@@ -27,45 +22,26 @@ def test_normal_calendar_html_is_not_flagged():
     assert reason is None
 
 
-def test_debug_artifact_paths_are_deterministic():
-    paths = debug_artifact_paths(datetime(2025, 4, 7), debug_dir="debug")
+def test_http_debug_artifact_paths_are_deterministic():
+    paths = http_debug_artifact_paths("http_calendar_2025-04-07", debug_dir="debug")
 
-    assert str(paths["html"]) == "debug/forexfactory_2025-04-07.html"
-    assert str(paths["png"]) == "debug/forexfactory_2025-04-07.png"
-    assert str(paths["txt"]) == "debug/forexfactory_2025-04-07.txt"
-
-
-class FakeElement:
-    text = "Performing security verification This website uses a security service."
+    assert str(paths["html"]) == "debug/http_calendar_2025-04-07.html"
+    assert str(paths["txt"]) == "debug/http_calendar_2025-04-07.txt"
 
 
-class FakeDriver:
-    title = "Performing security verification"
-    page_source = "<html><body>security service</body></html>"
-    current_url = "https://www.forexfactory.com/calendar?day=apr7.2025"
-
-    def __init__(self):
-        self.screenshot_path = None
-
-    def find_element(self, by, value):
-        return FakeElement()
-
-    def save_screenshot(self, path):
-        self.screenshot_path = path
-        return True
-
-
-def test_dump_page_debug_artifacts_writes_files(tmp_path):
-    driver = FakeDriver()
-    paths = dump_page_debug_artifacts(
-        driver,
-        datetime(2025, 4, 7),
-        "security_verification",
-        debug_dir=str(tmp_path),
+def test_dump_http_debug_writes_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = HttpResult(
+        url="https://www.forexfactory.com/calendar?week=apr07.2025",
+        status_code=200,
+        final_url="https://www.forexfactory.com/calendar?week=apr07.2025",
+        content_type="text/html",
+        text="<html><head><title>Performing security verification</title></head><body>security service</body></html>",
     )
 
-    assert paths["html"].read_text(encoding="utf-8") == driver.page_source
+    paths = dump_http_debug(result, "security_verification", "http_calendar_2025-04-07", ["https://example.test/export.json"])
+
+    assert paths["html"].read_text(encoding="utf-8") == result.text
     txt = paths["txt"].read_text(encoding="utf-8")
-    assert "reason: security_verification" in txt
-    assert driver.current_url in txt
-    assert driver.screenshot_path == str(paths["png"])
+    assert "detected_reason: security_verification" in txt
+    assert "export_links_found: True" in txt

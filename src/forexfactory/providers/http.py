@@ -26,6 +26,14 @@ class HttpResult:
     text: str
 
 
+def http_debug_artifact_paths(debug_name: str, debug_dir: str = "debug") -> dict[str, Path]:
+    base = Path(debug_dir) / debug_name
+    return {
+        "html": base.with_suffix(".html"),
+        "txt": base.with_suffix(".txt"),
+    }
+
+
 def fetch_url(url: str, headers: dict | None = None, timeout: int = 30) -> HttpResult:
     req = Request(url, headers=headers or DEFAULT_HEADERS)
     try:
@@ -71,10 +79,10 @@ def calendar_rows_present(html: str) -> bool:
 
 
 def dump_http_debug(result: HttpResult, reason: str, debug_name: str, export_links: list[str] | None = None):
-    debug_dir = Path("debug")
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    html_path = debug_dir / f"{debug_name}.html"
-    txt_path = debug_dir / f"{debug_name}.txt"
+    paths = http_debug_artifact_paths(debug_name)
+    paths["html"].parent.mkdir(parents=True, exist_ok=True)
+    html_path = paths["html"]
+    txt_path = paths["txt"]
     html_path.write_text(result.text, encoding="utf-8")
     title = extract_title(result.text)
     body = body_text(result.text)

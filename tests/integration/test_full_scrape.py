@@ -37,7 +37,7 @@ class TestFullScrape(unittest.TestCase):
 
     @pytest.mark.skipif(
         os.environ.get("RUN_LIVE_SCRAPE") != "1",
-        reason="Live Selenium scrape is disabled unless RUN_LIVE_SCRAPE=1",
+        reason="Live scrape is disabled unless RUN_LIVE_SCRAPE=1",
     )
     def test_scrape_small_range(self):
         """

@@ -1,32 +1,78 @@
 from datetime import datetime
 
+import pandas as pd
 from dateutil.tz import gettz
 
-from src.forexfactory.incremental import _group_contiguous_days, _iter_days
+from src.forexfactory.incremental import scrape_incremental
 
 
-def test_iter_days_inclusive_with_timezone():
+class DummyProvider:
+    def __init__(self, events):
+        self.events = events
+        self.calls = []
+
+    def fetch_events(self, start_date, end_date, tzname, **kwargs):
+        self.calls.append((start_date, end_date, tzname, kwargs))
+        return list(self.events)
+
+
+def _event(datetime_local: str, currency: str, event: str, source: str = "forexfactory-html"):
+    return {
+        "date": datetime_local[:10],
+        "time": datetime_local[11:19],
+        "datetime_local": datetime_local,
+        "datetime_utc": "2025-04-07T06:30:00+00:00",
+        "currency": currency,
+        "impact": "High",
+        "event": event,
+        "actual": "",
+        "forecast": "",
+        "previous": "",
+        "source": source,
+        "source_url": "https://example.test",
+        "detail_url": "https://example.test/detail",
+    }
+
+
+def test_scrape_incremental_is_idempotent(tmp_path):
+    output = tmp_path / "cache.csv"
+    provider = DummyProvider([_event("2025-04-07T10:00:00+03:30", "USD", "Jobs")])
     tz = gettz("Asia/Tehran")
     start = datetime(2025, 4, 7, tzinfo=tz)
-    end = datetime(2025, 4, 9, tzinfo=tz)
+    end = datetime(2025, 4, 7, tzinfo=tz)
 
-    days = list(_iter_days(start, end))
+    scrape_incremental(start, end, str(output), tzname="Asia/Tehran", provider=provider)
+    scrape_incremental(start, end, str(output), tzname="Asia/Tehran", provider=provider)
 
-    assert [day.date().isoformat() for day in days] == ["2025-04-07", "2025-04-08", "2025-04-09"]
-    assert all(day.tzinfo is not None for day in days)
+    df = pd.read_csv(output, dtype=str)
+
+    assert len(df) == 1
+    assert df.iloc[0]["DateTime"] == "2025-04-07T10:00:00+03:30"
+    assert len(provider.calls) == 2
 
 
-def test_group_contiguous_days_splits_gaps():
+def test_scrape_incremental_preserves_existing_history(tmp_path):
+    output = tmp_path / "cache.csv"
+    existing = pd.DataFrame([
+        {
+            "DateTime": "2025-04-06T09:00:00+03:30",
+            "Currency": "EUR",
+            "Impact": "Low",
+            "Event": "Old",
+            "Actual": "",
+            "Forecast": "",
+            "Previous": "",
+            "Detail": "",
+        }
+    ])
+    existing.to_csv(output, index=False)
+
+    provider = DummyProvider([_event("2025-04-07T10:00:00+03:30", "USD", "Jobs")])
     tz = gettz("Asia/Tehran")
-    days = [
-        datetime(2025, 4, 7, tzinfo=tz),
-        datetime(2025, 4, 8, tzinfo=tz),
-        datetime(2025, 4, 10, tzinfo=tz),
-    ]
+    start = datetime(2025, 4, 7, tzinfo=tz)
+    end = datetime(2025, 4, 7, tzinfo=tz)
 
-    groups = _group_contiguous_days(days)
+    scrape_incremental(start, end, str(output), tzname="Asia/Tehran", provider=provider)
+    df = pd.read_csv(output, dtype=str)
 
-    assert [(start.date().isoformat(), end.date().isoformat()) for start, end in groups] == [
-        ("2025-04-07", "2025-04-08"),
-        ("2025-04-10", "2025-04-10"),
-    ]
+    assert set(df["DateTime"]) == {"2025-04-06T09:00:00+03:30", "2025-04-07T10:00:00+03:30"}
