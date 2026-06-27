@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from src.forexfactory.csv_util import CSV_COLUMNS
+from src.forexfactory.normalizer import LEGACY_COLUMNS
 from src.forexfactory.main import scrape_range_with_details
 
 
@@ -27,7 +28,10 @@ class TestFullScrape(unittest.TestCase):
             self.skipTest("forex_factory_cache.csv is not available")
 
         df = pd.read_csv(cache_file, dtype=str, nrows=50)
-        self.assertEqual(list(df.columns), CSV_COLUMNS)
+        self.assertTrue(
+            list(df.columns) == CSV_COLUMNS or list(df.columns) == LEGACY_COLUMNS,
+            "Cached dataset should use either the legacy schema or the current normalized schema.",
+        )
         self.assertGreater(len(df), 0)
         self.assertTrue(df["DateTime"].str.match(r"\d{4}-\d{2}-\d{2}T").all())
 

@@ -1,7 +1,9 @@
 import logging
 from datetime import timedelta
 
-from .csv_util import ensure_csv_header, read_existing_data
+import pandas as pd
+
+from .csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 from .scraper import scrape_range_pandas
 
 logging.basicConfig(
@@ -51,7 +53,20 @@ def _group_contiguous_days(days):
     return groups
 
 
-def scrape_incremental(from_date, to_date, output_csv, tzname="Asia/Tehran", scrape_details=False, impact_filter=None, keep_currencies=None):
+def scrape_incremental(
+    from_date,
+    to_date,
+    output_csv,
+    tzname="Asia/Tehran",
+    scrape_details=False,
+    impact_filter=None,
+    keep_currencies=None,
+    driver_config=None,
+    page_timeout=120,
+    retries=2,
+    manual_verification_timeout=0,
+    dump_debug_artifacts=False,
+):
     """
     Scrape only days that are missing from the output CSV.
     When scrape_details=True, days with any empty Detail values are refreshed.
@@ -77,4 +92,31 @@ def scrape_incremental(from_date, to_date, output_csv, tzname="Asia/Tehran", scr
             scrape_details=scrape_details,
             impact_filter=impact_filter,
             keep_currencies=keep_currencies,
+            driver_config=driver_config,
+            page_timeout=page_timeout,
+            retries=retries,
+            manual_verification_timeout=manual_verification_timeout,
+            dump_debug_artifacts=dump_debug_artifacts,
         )
+
+
+def write_provider_events(output_csv, events, impact_filter=None, keep_currencies=None):
+    ensure_csv_header(output_csv)
+    existing_df = read_existing_data(output_csv)
+    df_new = pd.DataFrame(events)
+    if df_new.empty:
+        logger.info("Provider returned no events; CSV unchanged.")
+        write_data_to_csv(existing_df, output_csv)
+        return
+
+    if impact_filter and "impact" in df_new.columns:
+        import re
+        pattern = "|".join(re.escape(i) for i in impact_filter)
+        df_new = df_new[df_new["impact"].fillna("").str.lower().str.contains(pattern)]
+    if keep_currencies and "currency" in df_new.columns:
+        keep = {currency.upper() for currency in keep_currencies}
+        df_new = df_new[df_new["currency"].fillna("").str.upper().isin(keep)]
+
+    merged_df = merge_new_data(existing_df, df_new)
+    write_data_to_csv(merged_df, output_csv)
+    logger.info("Done. Added/updated %s provider rows.", max(len(merged_df) - len(existing_df), 0))

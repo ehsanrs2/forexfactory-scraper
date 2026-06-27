@@ -1,6 +1,8 @@
 import time
 import re
 import logging
+import inspect
+from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
 from dateutil.tz import gettz
@@ -10,10 +12,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     NoSuchElementException,
     TimeoutException,
+    WebDriverException,
 )
 
 from .csv_util import CSV_COLUMNS, ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
 from .detail_parser import parse_detail_table, detail_data_to_string
+from .driver import DriverConfig, create_chrome_driver
+from .page_detection import detect_page_issue, normalize_text as _normalize_text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,15 +27,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+CALENDAR_SELECTORS = (
+    "table.calendar__table",
+    "tr.calendar__row",
+    ".calendar__row",
+    "[data-event-id]",
+)
+CALENDAR_SELECTOR = ", ".join(CALENDAR_SELECTORS)
+
+
+class PageValidationError(RuntimeError):
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
 
 def empty_calendar_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=CSV_COLUMNS)
-
-
-def create_chrome_driver():
-    import undetected_chromedriver as uc
-
-    return uc.Chrome()
 
 
 def get_day_from_day_breaker(row, fallback_date: datetime, tzname="Asia/Tehran"):
@@ -62,10 +75,161 @@ def get_day_from_day_breaker(row, fallback_date: datetime, tzname="Asia/Tehran")
     elif fallback_date.month == 1 and parsed.month == 12:
         parsed = parsed.replace(year=fallback_date.year - 1)
 
-    return parsed.replace(tzinfo=gettz(tzname))
+    tz = gettz(tzname)
+    return parsed.replace(tzinfo=tz)
 
 
-def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existing_df=None) -> pd.DataFrame:
+def _page_snapshot(driver) -> tuple[str, str, str]:
+    title = driver.title or ""
+    source = driver.page_source or ""
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text
+    except Exception:
+        body = ""
+    return title, body, source
+
+
+def _has_calendar(driver) -> bool:
+    return bool(driver.find_elements(By.CSS_SELECTOR, CALENDAR_SELECTOR))
+
+
+def _wait_for_ready_and_body(driver, timeout: int):
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script("return document.readyState") in {"interactive", "complete"}
+    )
+    WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+
+def debug_artifact_paths(the_date: datetime, debug_dir: str = "debug") -> dict[str, Path]:
+    base = Path(debug_dir) / f"forexfactory_{the_date.date().isoformat()}"
+    return {
+        "html": base.with_suffix(".html"),
+        "png": base.with_suffix(".png"),
+        "txt": base.with_suffix(".txt"),
+    }
+
+
+def dump_page_debug_artifacts(driver, the_date: datetime, reason: str, debug_dir: str = "debug") -> dict[str, Path]:
+    paths = debug_artifact_paths(the_date, debug_dir)
+    paths["html"].parent.mkdir(parents=True, exist_ok=True)
+    title, body, source = _page_snapshot(driver)
+    paths["html"].write_text(source, encoding="utf-8")
+    paths["txt"].write_text(
+        "\n".join([
+            f"reason: {reason}",
+            f"current_url: {driver.current_url}",
+            f"title: {title}",
+            "body_preview:",
+            _normalize_text(body)[:2000],
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    try:
+        driver.save_screenshot(str(paths["png"]))
+    except Exception as exc:
+        logger.warning("Could not save debug screenshot for %s: %s", the_date.date(), exc)
+    logger.info("Saved ForexFactory debug artifacts for %s to %s", the_date.date(), paths["html"].parent)
+    return paths
+
+
+def _raise_page_validation(driver, the_date: datetime, reason: str, message: str, dump_debug_artifacts: bool):
+    if dump_debug_artifacts:
+        dump_page_debug_artifacts(driver, the_date, reason)
+    raise PageValidationError(reason, message)
+
+
+def _wait_for_manual_verification(driver, the_date: datetime, timeout: int, dump_debug_artifacts: bool) -> bool:
+    logger.warning(
+        "ForexFactory security verification page detected. Complete the verification in the opened browser; "
+        "waiting up to %s seconds for the calendar to appear.",
+        timeout,
+    )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _has_calendar(driver):
+            logger.info("Calendar appeared after manual verification for %s.", the_date.date())
+            return True
+        title, body, source = _page_snapshot(driver)
+        issue = detect_page_issue(title, body, source)
+        if issue not in {"security_verification", "privacy_consent", None}:
+            break
+        time.sleep(2)
+
+    if dump_debug_artifacts:
+        dump_page_debug_artifacts(driver, the_date, "security_verification_timeout")
+    return False
+
+
+def _validate_calendar_page(
+    driver,
+    the_date: datetime,
+    *,
+    page_timeout: int,
+    manual_verification_timeout: int,
+    dump_debug_artifacts: bool,
+):
+    _wait_for_ready_and_body(driver, min(page_timeout, 30))
+    title, body, source = _page_snapshot(driver)
+    issue = detect_page_issue(title, body, source)
+    if issue == "security_verification":
+        if manual_verification_timeout > 0:
+            if _wait_for_manual_verification(driver, the_date, manual_verification_timeout, dump_debug_artifacts):
+                return
+            raise PageValidationError(
+                "security_verification",
+                "ForexFactory security verification page detected and manual verification timed out. "
+                "Run with --no-headless and --user-data-dir, complete the verification manually, then retry using the same profile.",
+            )
+        _raise_page_validation(
+            driver,
+            the_date,
+            issue,
+            "ForexFactory security verification page detected. The browser reached a verification page instead of the calendar. "
+            "Run with --no-headless and --user-data-dir, complete the verification manually, then retry using the same profile.",
+            dump_debug_artifacts,
+        )
+    if issue in {"privacy_consent", "empty_body"}:
+        _raise_page_validation(
+            driver,
+            the_date,
+            issue,
+            f"ForexFactory returned a {issue.replace('_', ' ')} page instead of the calendar.",
+            dump_debug_artifacts,
+        )
+
+    try:
+        WebDriverWait(driver, page_timeout).until(lambda d: _has_calendar(d))
+    except TimeoutException as exc:
+        title, body, source = _page_snapshot(driver)
+        issue = detect_page_issue(title, body, source)
+        if issue == "security_verification":
+            message = (
+                "ForexFactory security verification page detected. The browser reached a verification page instead of the calendar. "
+                "Run with --no-headless and --user-data-dir, complete the verification manually, then retry using the same profile."
+            )
+            _raise_page_validation(driver, the_date, issue, message, dump_debug_artifacts)
+        reason = issue or "calendar_selector_missing"
+        message = (
+            f"ForexFactory calendar selectors were not found after page load. Tried: {CALENDAR_SELECTOR}. "
+            "This usually means the calendar DOM changed, the page is blocked, or ForexFactory returned malformed HTML."
+        )
+        if dump_debug_artifacts:
+            dump_page_debug_artifacts(driver, the_date, reason)
+        raise PageValidationError(reason, message) from exc
+
+
+def parse_calendar_day(
+    driver,
+    the_date: datetime,
+    scrape_details=False,
+    existing_df=None,
+    *,
+    page_timeout=30,
+    tzname="Asia/Tehran",
+    manual_verification_timeout=0,
+    dump_debug_artifacts=False,
+) -> pd.DataFrame:
     """
     Scrape data for a single day (the_date) and return a DataFrame with columns:
       DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
@@ -77,57 +241,77 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existin
     date_str = the_date.strftime('%b%d.%Y').lower()
     url = f"https://www.forexfactory.com/calendar?day={date_str}"
     logger.info(f"Scraping URL: {url}")
-    try:
-        driver.get(url)
-    except Exception as e:
-        logger.warning(f"Failed to load page for {the_date.date()}: {e}")
-        return empty_calendar_frame()
+    driver.get(url)
 
-    try:
-        WebDriverWait(driver, 30).until(  # Increased wait time
-            EC.visibility_of_element_located((By.XPATH, '//table[contains(@class,"calendar__table")]'))
+    _validate_calendar_page(
+        driver,
+        the_date,
+        page_timeout=page_timeout,
+        manual_verification_timeout=manual_verification_timeout,
+        dump_debug_artifacts=dump_debug_artifacts,
+    )
+
+    rows = driver.find_elements(By.CSS_SELECTOR, 'tr.calendar__row')
+    if not rows:
+        if driver.find_elements(By.CSS_SELECTOR, "[data-event-id]"):
+            message = (
+                "ForexFactory exposed event containers but not tr.calendar__row rows. "
+                "The calendar DOM likely changed and parser selectors need updating."
+            )
+        else:
+            message = "No calendar rows found after calendar validation; page layout may have changed."
+        _raise_page_validation(
+            driver,
+            the_date,
+            "calendar_selector_missing",
+            message,
+            dump_debug_artifacts,
         )
-    except TimeoutException:
-        logger.warning(f"Page did not load for day={the_date.date()}")
-        return empty_calendar_frame()
 
-    rows = driver.find_elements(By.XPATH, '//tr[contains(@class,"calendar__row")]')
     data_list = []
     current_day = the_date
     last_clock_time = None
 
     for row in rows:
-        row_class = row.get_attribute("class")
+        row_class = row.get_attribute("class") or ""
+        parsed_day = get_day_from_day_breaker(row, current_day, tzname=tzname)
+        if parsed_day is not None:
+            current_day = parsed_day
+            last_clock_time = None
         if "day-breaker" in row_class or "no-event" in row_class:
             continue
 
         # Parse the basic cells
         try:
-            time_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__time")]')
-            currency_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__currency")]')
-            impact_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__impact")]')
-            event_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__event")]')
-            actual_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__actual")]')
-            forecast_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__forecast")]')
-            previous_el = row.find_element(By.XPATH, './/td[contains(@class,"calendar__previous")]')
+            time_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__time')
+            currency_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__currency')
+            impact_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__impact')
+            event_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__event')
+            actual_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__actual')
+            forecast_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__forecast')
+            previous_el = row.find_element(By.CSS_SELECTOR, 'td.calendar__previous')
         except NoSuchElementException:
+            logger.debug("Skipping malformed calendar row for %s: %s", the_date.date(), row_class)
             continue
 
-        time_text = time_el.text.strip()
-        currency_text = currency_el.text.strip()
+        time_text = _normalize_text(time_el.text)
+        currency_text = _normalize_text(currency_el.text)
 
         # Get impact text
         impact_text = ""
         try:
             impact_span = impact_el.find_element(By.XPATH, './/span')
-            impact_text = impact_span.get_attribute("title") or ""
+            impact_text = _normalize_text(impact_span.get_attribute("title"))
         except Exception:
-            impact_text = impact_el.text.strip()
+            impact_text = _normalize_text(impact_el.text)
 
-        event_text = event_el.text.strip()
-        actual_text = actual_el.text.strip()
-        forecast_text = forecast_el.text.strip()
-        previous_text = previous_el.text.strip()
+        event_text = _normalize_text(event_el.text)
+        actual_text = _normalize_text(actual_el.text)
+        forecast_text = _normalize_text(forecast_el.text)
+        previous_text = _normalize_text(previous_el.text)
+        if not currency_text or not event_text:
+            logger.debug("Skipping row with missing currency/event for %s", the_date.date())
+            continue
 
         # Determine event time based on text
         event_dt = current_day
@@ -175,7 +359,6 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existin
                 try:
                     open_link = row.find_element(By.XPATH, './/td[contains(@class,"calendar__detail")]/a')
                     driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth',block:'center'});", open_link)
-                    time.sleep(1)
                     open_link.click()
                     WebDriverWait(driver, 5).until(
                         EC.visibility_of_element_located(
@@ -205,22 +388,53 @@ def parse_calendar_day(driver, the_date: datetime, scrape_details=False, existin
     return pd.DataFrame(data_list)
 
 
-def scrape_day(driver, the_date: datetime, existing_df: pd.DataFrame, scrape_details=False) -> pd.DataFrame:
+def scrape_day(
+    driver,
+    the_date: datetime,
+    existing_df: pd.DataFrame,
+    scrape_details=False,
+    *,
+    page_timeout=30,
+    tzname="Asia/Tehran",
+    manual_verification_timeout=0,
+    dump_debug_artifacts=False,
+) -> pd.DataFrame:
     """
     Re-scrape a single day, using existing_df to check for already-saved details.
     """
-    df_day_new = parse_calendar_day(driver, the_date, scrape_details=scrape_details, existing_df=existing_df)
+    df_day_new = parse_calendar_day(
+        driver,
+        the_date,
+        scrape_details=scrape_details,
+        existing_df=existing_df,
+        page_timeout=page_timeout,
+        tzname=tzname,
+        manual_verification_timeout=manual_verification_timeout,
+        dump_debug_artifacts=dump_debug_artifacts,
+    )
     return df_day_new
 
 
+def _create_driver(driver_factory, driver_config):
+    parameters = inspect.signature(driver_factory).parameters
+    if not parameters:
+        if driver_config is not None:
+            logger.debug("Driver factory does not accept DriverConfig; calling without arguments")
+        return driver_factory()
+    return driver_factory(driver_config)
+
+
 def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran",
-                        scrape_details=False, impact_filter=None, keep_currencies=None, driver_factory=create_chrome_driver):
+                        scrape_details=False, impact_filter=None, keep_currencies=None,
+                        driver_factory=create_chrome_driver, driver_config: DriverConfig | None = None,
+                        page_timeout=120, retries=2, manual_verification_timeout=0,
+                        dump_debug_artifacts=False):
     ensure_csv_header(output_csv)
     existing_df = read_existing_data(output_csv)
 
-    driver = driver_factory()
+    driver = _create_driver(driver_factory, driver_config)
     driver.set_window_size(1400, 1000)
-    driver.set_page_load_timeout(300)  # Increase timeout to 5 minutes
+    driver.set_page_load_timeout(page_timeout)
 
     total_new = 0
     day_count = (to_date - from_date).days + 1
@@ -229,25 +443,58 @@ def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str,
     try:
         current_day = from_date
         while current_day <= to_date:
-            logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}...")
-            df_new = scrape_day(driver, current_day, existing_df, scrape_details=scrape_details)
+            logger.info("Scraping day %s...", current_day.strftime('%Y-%m-%d'))
+            df_new = empty_calendar_frame()
+            for attempt in range(1, retries + 2):
+                try:
+                    df_new = scrape_day(
+                        driver,
+                        current_day,
+                        existing_df,
+                        scrape_details=scrape_details,
+                        page_timeout=min(page_timeout, 60),
+                        tzname=tzname,
+                        manual_verification_timeout=manual_verification_timeout,
+                        dump_debug_artifacts=dump_debug_artifacts,
+                    )
+                    break
+                except PageValidationError:
+                    raise
+                except (TimeoutException, WebDriverException) as exc:
+                    if attempt > retries:
+                        logger.error("Failed to scrape %s after %s attempt(s): %s", current_day.date(), attempt, exc)
+                        break
+                    delay = min(2 ** attempt, 30)
+                    logger.warning(
+                        "Failed to scrape %s on attempt %s/%s: %s; retrying in %ss",
+                        current_day.date(),
+                        attempt,
+                        retries + 1,
+                        exc,
+                        delay,
+                    )
+                    time.sleep(delay)
 
             if impact_filter and not df_new.empty:
-                df_new = df_new[df_new['Impact'].str.lower().str.contains('|'.join(impact_filter))]
+                impact_pattern = '|'.join(re.escape(i) for i in impact_filter)
+                df_new = df_new[df_new['Impact'].fillna('').str.lower().str.contains(impact_pattern)]
 
             if keep_currencies and not df_new.empty:
-                df_new = df_new[df_new['Currency'].isin(keep_currencies)]
+                keep = {c.upper() for c in keep_currencies}
+                df_new = df_new[df_new['Currency'].str.upper().isin(keep)]
 
             if not df_new.empty:
                 merged_df = merge_new_data(existing_df, df_new)
                 new_rows = len(merged_df) - len(existing_df)
                 if new_rows > 0:
-                    logger.info(f"Added/Updated {new_rows} rows for {current_day.date()}")
+                    logger.info("Added/updated %s rows for %s", new_rows, current_day.date())
                 existing_df = merged_df
                 total_new += new_rows
 
                 # Save updated data to CSV after processing the day's data.
                 write_data_to_csv(existing_df, output_csv)
+            else:
+                logger.info("No rows collected for %s", current_day.date())
 
             current_day += timedelta(days=1)
     finally:
@@ -257,12 +504,12 @@ def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str,
                 logger.info("Chrome WebDriver closed successfully.")
             except OSError as ose:
                 # Ignore specific OSError during final cleanup (e.g., WinError 6)
-                logger.debug(f"Ignored OSError during WebDriver quit: {ose}")
+                logger.debug("Ignored OSError during WebDriver quit: %s", ose)
             except Exception as e:
-                logger.error(f"Error closing WebDriver: {e}")
+                logger.error("Error closing WebDriver: %s", e)
             finally:
                 driver = None
 
     # Final save (if needed)
     write_data_to_csv(existing_df, output_csv)
-    logger.info(f"Done. Total new/updated rows: {total_new}")
+    logger.info("Done. Total new/updated rows: %s", total_new)
