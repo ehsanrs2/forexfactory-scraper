@@ -1,0 +1,6 @@
+DateTime,Currency,Impact,Event,Actual,Forecast,Previous,Detail,date,time,datetime_local,datetime_utc,currency,impact,event,actual,forecast,previous,source,source_url,detail_url
+2020-01-02T01:45:00+00:00,CNY,High Impact Expected,RatingDog Manufacturing PMI,51.5,51.7,51.8,,2020-01-02,01:45:00,2020-01-02T01:45:00+00:00,2020-01-02T01:45:00+00:00,CNY,High Impact Expected,RatingDog Manufacturing PMI,51.5,51.7,51.8,,,
+2020-01-03T15:00:00+00:00,USD,High Impact Expected,ISM Manufacturing PMI,47.2,49.0,48.1,,2020-01-03,15:00:00,2020-01-03T15:00:00+00:00,2020-01-03T15:00:00+00:00,USD,High Impact Expected,ISM Manufacturing PMI,47.2,49.0,48.1,,,
+2020-01-03T19:00:00+00:00,USD,High Impact Expected,FOMC Meeting Minutes,,,,,2020-01-03,19:00:00,2020-01-03T19:00:00+00:00,2020-01-03T19:00:00+00:00,USD,High Impact Expected,FOMC Meeting Minutes,,,,,,
+2020-01-07T15:00:00+00:00,USD,High Impact Expected,ISM Services PMI,55.0,54.5,53.9,,2020-01-07,15:00:00,2020-01-07T15:00:00+00:00,2020-01-07T15:00:00+00:00,USD,High Impact Expected,ISM Services PMI,55.0,54.5,53.9,,,
+2020-01-08T00:30:00+00:00,AUD,High Impact Expected,Building Approvals m/m,11.8%,2.1%,-7.9%,,2020-01-08,00:30:00,2020-01-08T00:30:00+00:00,2020-01-08T00:30:00+00:00,AUD,High Impact Expected,Building Approvals m/m,11.8%,2.1%,-7.9%,,,

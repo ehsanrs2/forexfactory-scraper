@@ -67,6 +67,8 @@ python scripts/validate_cache.py \
 
 The CSV also retains legacy columns (`DateTime`, `Currency`, `Impact`, `Event`, `Actual`, `Forecast`, `Previous`, `Detail`) for compatibility. Some values may be missing in the source.
 
+**Example CSV:** [View five real historical events in the current normalized CSV schema](examples/sample_events.csv). This small example was derived from the repository's existing [`high_impact_events_calendar.csv`](high_impact_events_calendar.csv) (January 2020) using the current normalization field conventions in UTC. **It is not the result of a new live scrape.** Original event values are preserved; `source`, `source_url`, and `detail_url` are empty because that legacy file did not record them.
+
 If the source responds with a verification page instead of calendar HTML, consult [Troubleshooting](#troubleshooting); successful live scraping is not guaranteed.
 
 ## Historical Dataset on Hugging Face
