@@ -168,6 +168,11 @@ The report includes counts of canonical timestamps, in-range rows, duplicate gro
 
 **Network errors:** A live provider needs access to the source. The `saved-html` provider supports offline parsing of a file you already have.
 
+## More Documentation
+
+- [FAQ: historical Forex Factory data, Python usage, backtesting, and troubleshooting](docs/faq.md)
+- [Companion dataset on Hugging Face](https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar)
+
 ## Development and Contributing
 
 Install development requirements and run the offline tests:
