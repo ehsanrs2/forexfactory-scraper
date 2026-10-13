@@ -5,6 +5,8 @@
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Hugging Face Dataset](https://img.shields.io/badge/%F0%9F%A4%97-Dataset-yellow)](https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar)
 
+![Forex Factory Scraper — historical economic calendar data](assets/forex-factory-social-preview.webp)
+
 A **Python Forex Factory economic calendar scraper** for collecting, normalizing, and validating economic events in a persistent CSV cache. Use the resulting data in financial research, historical event analysis, backtesting workflows, or machine-learning feature engineering.
 
 Unlike a one-off export, the scraper supports **incremental updates**, **preservation of previously collected rows**, **duplicate-aware merges**, timezone-aware timestamps, and offline validation.
