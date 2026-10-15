@@ -15,3 +15,5 @@ SERVER_SETUP.md
 .env
 output/
 dist/
+downloaded_files/
+cache/

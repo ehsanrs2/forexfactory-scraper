@@ -1,151 +1,108 @@
 # Forex Factory Scraper
 
-A robust web scraper for [Forex Factory](https://www.forexfactory.com/) economic calendar events. Built with Selenium and pandas, supporting incremental scraping and automated daily actual value updates.
+Reads the [Forex Factory](https://www.forexfactory.com/) economic calendar and uploads it to tmd-auth (`POST /api/calendar/econ/upload`), which serves it to the Calendar tab, the chart markers and the mobile app.
 
-## Table of Contents
+## How it works
 
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Scripts](#scripts)
-- [Dependencies](#dependencies)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+1. [SeleniumBase](https://github.com/seleniumbase/SeleniumBase) opens Chrome in UC Mode, which gets past Cloudflare.
+2. For each month it opens `calendar?month=oct.2026` and reads the event list Forex Factory embeds in the page (`window.calendarComponentStates`). Every event has a stable id, a Unix `dateline` (so times are UTC with no time zone guessing), actual, forecast, previous and revision.
+3. The detail of each event (source, what it measures, usual effect, frequency, next release) comes from `/calendar/details/1-<id>`, fetched from inside the page. Details are cached in `cache/details.json`. A run fetches the detail of a new event, and refreshes it once a day only while the event is between 3 days ago and 14 days ahead, so the daily year run stays light.
+4. Events are uploaded one month at a time as `{ source, from, to, events }`. tmd-auth writes each event by its Forex Factory id, removes the events in that window that Forex Factory no longer lists, and records revisions on the earlier release.
 
-## Features
-
-- **Incremental Scraping:** Only fetches new or updated events, skipping already-scraped data
-- **Daily Actual Updates:** Automated script to update actual values every 4-6 hours via cron
-- **Flexible Date Range:** Specify any start/end date range
-- **Timezone Support:** Defaults to `UTC`
-- **JSON Export:** Convert CSV output to JSON for backend consumption
-- **Filtering:** Filter by impact level and currency
-
-## Installation
-
-### Prerequisites
-
-- Python 3.7+
-- Google Chrome (latest version recommended)
-
-### Steps
-
-1. **Clone the repository**
-
-   ```bash
-   git clone https://github.com/Tabmydata/forexfactory-scraper.git
-   cd forexfactory-scraper
-   ```
-
-2. **Create a virtual environment**
-
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # macOS/Linux
-   ```
-
-3. **Install dependencies**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
+A run that cannot read a month uploads nothing, so a bad page never removes good data.
 
 ## Usage
 
-### Command-Line Arguments
+```bash
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+```
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `--start` | Yes | — | Start date (YYYY-MM-DD) |
-| `--end` | Yes | — | End date (YYYY-MM-DD) |
-| `--csv` | No | `forex_factory_cache.csv` | Output CSV file path |
-| `--tz` | No | `UTC` | Timezone |
-| `--details` | No | false | Scrape detailed event info |
-| `--impact` | No | all | Filter by impact: `high,medium,low` |
-| `--keep-currencies` | No | all | Filter by currency: `USD EUR GBP` |
+| Command | What it does |
+|---|---|
+| `venv/bin/python run.py --window` | This month and next month. The regular run. |
+| `venv/bin/python run.py --year 2026` | A whole year. Used for the first fill and once a day. |
+| `venv/bin/python run.py --range 2026-10-13 2026-10-15` | Any dates, both included. |
+| `--no-details` | Skip the detail of each event. |
+| `--dry-run out.json` | Write what would be uploaded to a file instead of uploading. |
 
-### Examples
+`run.py` reads `ECON_UPLOAD_URL` (for example `https://host/api`) and `ECON_UPLOAD_SECRET` from `.env` or `.env.local` beside it, or from the environment.
+
+## Tests
 
 ```bash
-# Scrape a specific week
-python3 -m src.forexfactory.main \
-  --start 2026-03-10 --end 2026-03-14 \
-  --csv econ_2026.csv
-
-# Scrape high-impact USD/EUR events only
-python3 -m src.forexfactory.main \
-  --start 2026-01-01 --end 2026-12-31 \
-  --csv econ_2026.csv \
-  --impact high \
-  --keep-currencies USD EUR
+venv/bin/python -m unittest discover -s tests -t .
 ```
 
-## Scripts
+## Server setup (Ubuntu 24.04, x86_64)
 
-### scrape_2026.sh — Full year initial scrape
+Run as the user that owns the cron (root on `cron-bot-forex`), from `/root/forexfactory-scraper`.
 
-```bash
-bash scrape_2026.sh
-```
+1. Chrome and a virtual display:
 
-Scrapes month by month (Jan–Dec 2026) into a single `econ_2026.csv`, then converts to `econ_2026.json`. Run once on initial setup.
+   ```bash
+   wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+   apt install -y ./google-chrome-stable_current_amd64.deb python3-venv xvfb
+   rm google-chrome-stable_current_amd64.deb
+   ```
 
-### update_actuals.sh — Daily actual updates
+2. Code and packages:
 
-```bash
-bash update_actuals.sh
-```
+   ```bash
+   git pull
+   mv venv venv-old
+   python3 -m venv venv
+   venv/bin/pip install -r requirements.txt
+   ```
 
-Scrapes the past 2 days through tomorrow to capture actual values for recently released events.
+3. Check `.env` still has `ECON_UPLOAD_URL` and `ECON_UPLOAD_SECRET`.
 
-**Set up cron to run every 4 hours:**
+4. Try it without uploading:
 
-```bash
-crontab -e
-# Add this line:
-0 */4 * * * /home/ubuntu/forexfactory-scraper/update_actuals.sh >> /home/ubuntu/forexfactory-scraper/actuals.log 2>&1
-```
+   ```bash
+   venv/bin/python run.py --window --dry-run /tmp/ff-check.json
+   ```
 
-### to_json.py — Convert CSV to JSON
+5. Once tmd-auth with the window upload is deployed, fill the year:
 
-```bash
-python3 to_json.py econ_2026.csv econ_2026.json
-```
+   ```bash
+   venv/bin/python run.py --year 2026
+   ```
 
-## Dependencies
+6. Replace the old cron line (`crontab -e`):
 
-- [selenium](https://pypi.org/project/selenium/) — browser automation
-- [pandas](https://pandas.pydata.org/) — data manipulation
-- [undetected-chromedriver](https://pypi.org/project/undetected-chromedriver/) — bypass detection mechanisms
-- [python-dateutil](https://dateutil.readthedocs.io/en/stable/) — date and timezone handling
+   ```cron
+   */15 * * * * flock -n /tmp/ff-scraper.lock /root/forexfactory-scraper/venv/bin/python /root/forexfactory-scraper/run.py --window >> /root/forexfactory-scraper/actuals.log 2>&1
+   30 3 * * * flock -w 900 /tmp/ff-scraper.lock /root/forexfactory-scraper/venv/bin/python /root/forexfactory-scraper/run.py --year $(date +\%Y) >> /root/forexfactory-scraper/actuals.log 2>&1
+   ```
 
-## Troubleshooting
+   `flock -n` skips a run while the previous one is still going. The daily year run waits up to 15 minutes for it instead.
 
-### Getting 0 rows
+7. Keep a week of logs in `/etc/logrotate.d/forexfactory-scraper`:
 
-Forex Factory may block continuous requests. Use `scrape_2026.sh` which scrapes month by month with delays between requests.
+   ```
+   /root/forexfactory-scraper/actuals.log {
+       daily
+       rotate 7
+       compress
+       missingok
+       notifempty
+       copytruncate
+   }
+   ```
 
-### Chrome version mismatch
+## Deploy order
 
-Check your installed Chrome version and update `scraper.py`:
+1. tmd-auth first. It still accepts the old upload, so the old cron keeps working until step 2.
+2. This scraper on the server, steps 1 to 5 above.
+3. The new cron lines.
 
-```python
-driver = uc.Chrome(version_main=134)  # match your Chrome version
-```
+## Local runs on Apple Silicon
 
-### StaleElementReferenceException
-
-The scraper has built-in retry logic. If it persists, re-run the same date range — incremental mode will skip already-scraped events.
-
-### CAPTCHA / Cloudflare blocks
-
-- `undetected-chromedriver` handles most cases automatically
-- Increase the sleep delay between months in `scrape_2026.sh` if needed
+SeleniumBase runs its UC driver as an Intel binary on Apple Silicon, so the Mac needs Rosetta 2. Linux servers do not.
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-
----
 
 **Disclaimer:** For personal and educational use only. Ensure compliance with Forex Factory's [Terms of Service](https://www.forexfactory.com/disclaimer).
